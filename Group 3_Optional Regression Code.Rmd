@@ -1,0 +1,115 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-11-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(DescTools)
+library(car)  # for vif()
+library(corrplot)  # for corrplot()
+library(glmnet)
+library(plotmo) # for plot_glmnet()
+set.seed(3)
+```
+
+```{r fitting data}
+df <- read.csv("data/winequalityreds.csv")
+sum(is.na(df))
+sum(duplicated(df))
+# Calculate the standard deviation of each column.
+scaler <- apply(X=df, MARGIN=2, FUN=sd)
+
+# Divide each column by its standard deviation.
+df <- sweep(x=df, MARGIN=2, STATS=scaler, FUN="/")
+
+sample <- sample(x=nrow(df), size=nrow(df)*0.7)
+train <- df[sample,]
+test <- df[-sample,]
+
+train.x <- model.matrix(object=lm(quality~., train))[,-1]
+train.y <- train$quality
+test.x <- model.matrix(object=lm(quality~., test))[,-1]
+test.y <- test$quality
+```
+
+```{r generating cvmodel}
+set.seed(3)
+generate_cvmodels <- function (x) {
+
+  return(cv.glmnet(train.x, train.y, 
+                  type.measure = "mse", alpha = x/10))
+}
+cv_models <- lapply(0:10, generate_cvmodels)
+
+# Generate cross-validation mses for all 11 models
+cv_error <- unlist(lapply(cv_models, 
+                          function(x) x$cvm[x$lambda == x$lambda.min] ))
+
+# Return smallest alpha
+(which(cv_error == min(cv_error))-1)/10 #ridge regression 0 alpha
+```
+
+```{r model eva}
+eval_results <- function(fit, true) {
+  actual <- data.matrix(true)
+  SSE <- sum((actual - fit)^2)
+  SST <- sum((actual - mean(actual))^2)
+  R_square <- 1 - SSE / SST
+  data.frame(
+    MSE = MSE(fit, true),
+    MAE = MAE(fit, true),
+    RMSE = RMSE(fit, true),
+    MAPE = MAPE(fit, true),
+    R2 = R_square
+  )
+}
+```
+
+```{r}
+get_best_model <- function (models, errors) {  
+  
+  # models is a list of models, and 
+  # errors is a list of errors
+  best_n <- which(errors == min(errors))
+  return(
+    data.frame(
+      alpha = (best_n - 1)/10,  
+      lambda = models[[best_n]]$lambda.min,
+      CV_error = errors[best_n]
+    )
+  )
+}
+
+best_parameter <- get_best_model(cv_models, cv_error) #cv_model is the 11 models
+best_parameter
+```
+
+
+```{r putting in best model}
+glm_ElaNet <- glmnet(train.x, 
+                     train.y, 
+                     alpha = best_parameter$alpha, 
+                     lambda = best_parameter$lambda)
+(coef(glm_ElaNet)) #alcohol most significant coef with 0.3410
+```
+
+
+```{r eva train data}
+fit <- predict(glm_ElaNet, train.x)
+true <- train.y
+summary_ElaNet_train <- eval_results(fit, true)
+summary_ElaNet_train
+```
+
+```{r eva test data}
+fit <- predict(glm_ElaNet, test.x)
+true <- test.y
+summary_ElaNet_test <- eval_results(fit, true)[-5]
+summary_ElaNet_test
+```
+
